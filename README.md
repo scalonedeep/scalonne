@@ -1,9 +1,13 @@
-<!DOCTYPE html>
+
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Galería de Sayago Perros</title>
+    <!-- Firebase App (core) -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <!-- Firebase Firestore -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
     <style>
         * {
             margin: 0;
@@ -210,6 +214,14 @@
             color: #00f3ff;
         }
         
+        .firebase-status {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 5px;
+            background: rgba(0, 243, 255, 0.1);
+            border-left: 4px solid #00f3ff;
+        }
+        
         /* Responsividad */
         @media (max-width: 768px) {
             .gallery {
@@ -225,10 +237,6 @@
             .gallery {
                 grid-template-columns: 1fr;
             }
-        }
-        
-        .neon-text {
-            text-shadow: 0 0 5px #00f3ff, 0 0 10px #00f3ff;
         }
     </style>
 </head>
@@ -251,6 +259,10 @@
             
             <button id="upload-button">Subir fotos</button>
             <span id="upload-status" class="upload-status"></span>
+            
+            <div id="firebase-status" class="firebase-status">
+                🔄 Conectando con la base de datos...
+            </div>
         </section>
         
         <h2>Galería</h2>
@@ -267,6 +279,29 @@
     <script>
         // Clave API de ImgBB (tu clave)
         const IMGBB_API_KEY = '264a8837307c1166637c0f9675b8225c';
+        
+        // Configuración de Firebase (TUS DATOS - Reemplaza con los tuyos)
+        const firebaseConfig = {
+            apiKey: "AIzaSyCcM1PfPVbeuruaPOCt-ZzXdw3-cD8NjKc",
+            authDomain: "galeriaa-93b29.firebaseapp.com",
+            projectId: "galeriaa-93b29",
+            storageBucket: "galeriaa-93b29.firebasestorage.app",
+            messagingSenderId: "702730781803",
+            appId: "1:702730781803:web:5218884538edf056b9dd2e"
+        };
+        
+        // Inicializar Firebase
+        let db;
+        try {
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.firestore();
+            document.getElementById('firebase-status').innerHTML = '✅ Conectado a la base de datos. Las imágenes serán visibles desde cualquier dispositivo.';
+            document.getElementById('firebase-status').style.borderLeftColor = '#00ff00';
+        } catch (error) {
+            console.error('Error inicializando Firebase:', error);
+            document.getElementById('firebase-status').innerHTML = '❌ Error conectando a Firebase. Las imágenes solo serán visibles en este navegador.';
+            document.getElementById('firebase-status').style.borderLeftColor = '#ff0000';
+        }
         
         document.addEventListener('DOMContentLoaded', function() {
             const fileInput = document.getElementById('file-upload');
@@ -346,9 +381,9 @@
             function uploadToImgBB(file, name) {
                 return new Promise((resolve, reject) => {
                     const formData = new FormData();
-                    formData.append('image', file);  // Parámetro REQUERIDO
+                    formData.append('image', file);
                     if (name) {
-                        formData.append('name', name); // Parámetro OPCIONAL
+                        formData.append('name', name);
                     }
                     
                     fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
@@ -381,33 +416,94 @@
                 });
             }
             
-            // Función para guardar información de la imagen (simulada)
+            // Función para guardar información de la imagen
             function saveImageInfo(images) {
-                // En una implementación real, aquí enviarías los datos a un servidor
-                // Para este ejemplo, guardaremos en localStorage como simulación
                 return new Promise((resolve) => {
-                    let savedImages = JSON.parse(localStorage.getItem('sayagoGalleryImages')) || [];
-                    savedImages = savedImages.concat(images);
-                    localStorage.setItem('sayagoGalleryImages', JSON.stringify(savedImages));
-                    resolve();
+                    // Primero intentar guardar en Firebase
+                    if (db) {
+                        const batch = db.batch();
+                        const imagesRef = db.collection('images');
+                        
+                        images.forEach(image => {
+                            const docRef = imagesRef.doc();
+                            batch.set(docRef, {
+                                name: image.name,
+                                url: image.url,
+                                timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                            });
+                        });
+                        
+                        batch.commit()
+                            .then(() => {
+                                console.log('Imágenes guardadas en Firebase');
+                                // También guardar en localStorage como respaldo
+                                saveToLocalStorage(images);
+                                resolve();
+                            })
+                            .catch(error => {
+                                console.error('Error guardando en Firebase:', error);
+                                // Fallback a localStorage
+                                saveToLocalStorage(images);
+                                resolve();
+                            });
+                    } else {
+                        // Solo guardar en localStorage si Firebase no está disponible
+                        saveToLocalStorage(images);
+                        resolve();
+                    }
                 });
+            }
+            
+            // Función de respaldo para guardar en localStorage
+            function saveToLocalStorage(images) {
+                let savedImages = JSON.parse(localStorage.getItem('sayagoGalleryImages')) || [];
+                savedImages = savedImages.concat(images);
+                localStorage.setItem('sayagoGalleryImages', JSON.stringify(savedImages));
             }
             
             // Función para cargar imágenes
             function loadImages() {
-                // En una implementación real, aquí cargarías desde un servidor
-                // Para este ejemplo, cargaremos desde localStorage
+                // Primero intentar cargar desde Firebase si está disponible
+                if (db) {
+                    db.collection('images').orderBy('timestamp', 'desc').get()
+                        .then(snapshot => {
+                            if (!snapshot.empty) {
+                                gallery.innerHTML = '';
+                                snapshot.forEach(doc => {
+                                    const imageData = doc.data();
+                                    addImageToGallery(imageData);
+                                });
+                            }
+                            // También cargar desde localStorage por si hay imágenes más recientes
+                            loadFromLocalStorage();
+                        })
+                        .catch(error => {
+                            console.error('Error cargando desde Firebase:', error);
+                            // Fallback a localStorage
+                            loadFromLocalStorage();
+                        });
+                } else {
+                    // Cargar desde localStorage si Firebase no está disponible
+                    loadFromLocalStorage();
+                }
+            }
+            
+            // Función para cargar imágenes desde localStorage
+            function loadFromLocalStorage() {
                 const savedImages = JSON.parse(localStorage.getItem('sayagoGalleryImages')) || [];
                 
-                if (savedImages.length === 0) {
+                if (savedImages.length === 0 && gallery.innerHTML.includes('Cargando')) {
                     gallery.innerHTML = '<div class="no-images">No hay imágenes para mostrar. Sube algunas fotos.</div>';
                     return;
                 }
                 
-                gallery.innerHTML = '';
-                savedImages.forEach(imageData => {
-                    addImageToGallery(imageData);
-                });
+                // Solo agregar imágenes si no hay ninguna en la galería
+                if (gallery.innerHTML.includes('No hay imágenes')) {
+                    gallery.innerHTML = '';
+                    savedImages.forEach(imageData => {
+                        addImageToGallery(imageData);
+                    });
+                }
             }
             
             // Función para añadir imagen a la galería
@@ -419,6 +515,7 @@
                 const img = document.createElement('img');
                 img.src = imageData.url;
                 img.alt = imageData.name;
+                img.loading = 'lazy';
                 
                 const nameOverlay = document.createElement('div');
                 nameOverlay.className = 'image-name';
@@ -442,10 +539,23 @@
             // Función para eliminar imagen
             function deleteImage(imageData) {
                 if (confirm('¿Estás seguro de que quieres eliminar esta imagen?')) {
-                    // En una implementación real, aquí llamarías a un endpoint para eliminar
+                    // Eliminar de localStorage
                     let savedImages = JSON.parse(localStorage.getItem('sayagoGalleryImages')) || [];
                     savedImages = savedImages.filter(img => img.timestamp !== imageData.timestamp);
                     localStorage.setItem('sayagoGalleryImages', JSON.stringify(savedImages));
+                    
+                    // Intentar eliminar de Firebase si está disponible
+                    if (db) {
+                        db.collection('images').where('url', '==', imageData.url).get()
+                            .then(snapshot => {
+                                snapshot.forEach(doc => {
+                                    doc.ref.delete();
+                                });
+                            })
+                            .catch(error => {
+                                console.error('Error eliminando de Firebase:', error);
+                            });
+                    }
                     
                     // Recargar galería
                     loadImages();
